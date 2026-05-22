@@ -48,6 +48,9 @@ Run the service:
 The HTTP layer is a sketch backed by a process-local dict — no persistence, no auth, no targeting rules yet.
 
 Routes:
-- `GET /healthz`
-- `GET /flags`, `GET/PUT/DELETE /flags/{key}` (PUT body `key` must match path key)
-- `POST /evaluate/{key}` — accepts optional `EvaluationContext` body (extra fields allowed), returns `{key, value, reason}`. Reason is `FLAG_ENABLED` / `FLAG_DISABLED`. Unknown flag → 404 (not graceful-default). The context body is currently ignored — accepted only to shape the wire format for when targeting rules land.
+- `GET /` — redirects to `/docs` for discoverability; hidden from the OpenAPI schema.
+- `GET /healthz` — liveness (tag: System).
+- `GET /flags`, `GET/PUT/DELETE /flags/{key}` (tag: Flags). PUT body `key` must match path key.
+- `POST /evaluate/{key}` (tag: Evaluation). Accepts optional `EvaluationContext` body (extra fields allowed), returns `{key, value, reason}`. Reason is `FLAG_ENABLED` / `FLAG_DISABLED`. Unknown flag → 404 (not graceful-default). The context body is currently ignored — accepted only to shape the wire format for when targeting rules land.
+
+Discovery: FastAPI serves Swagger UI at `/docs`, ReDoc at `/redoc`, and the OpenAPI 3.x spec at `/openapi.json`. App `version` is sourced from `flagme.__version__` so the docs and the package can't drift.

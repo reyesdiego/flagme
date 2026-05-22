@@ -88,3 +88,37 @@ def test_evaluate_without_body() -> None:
 def test_evaluate_unknown_flag_returns_404() -> None:
     r = client.post("/evaluate/missing", json={})
     assert r.status_code == 404
+
+
+def test_root_redirects_to_docs() -> None:
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (307, 308)
+    assert r.headers["location"] == "/docs"
+
+
+def test_docs_endpoint_loads() -> None:
+    r = client.get("/docs")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+
+
+def test_openapi_schema_advertises_routes_and_tags() -> None:
+    r = client.get("/openapi.json")
+    assert r.status_code == 200
+    schema = r.json()
+
+    assert schema["info"]["title"] == "flagme"
+    assert {tag["name"] for tag in schema["tags"]} == {"System", "Flags", "Evaluation"}
+
+    paths = schema["paths"]
+    assert "/healthz" in paths
+    assert "/flags" in paths
+    assert "/flags/{key}" in paths
+    assert "/evaluate/{key}" in paths
+    # The root redirect is intentionally hidden from the schema
+    assert "/" not in paths
+
+    assert schema["paths"]["/evaluate/{key}"]["post"]["tags"] == ["Evaluation"]
+    assert {"Flag", "Evaluation", "EvaluationContext"} <= set(
+        schema["components"]["schemas"]
+    )
