@@ -45,4 +45,9 @@ Run the service:
 
 ## Status
 
-The HTTP layer is a sketch backed by a process-local dict — no persistence, no auth, no flag-evaluation engine yet. Routes: `GET /healthz`, `GET /flags`, `GET/PUT/DELETE /flags/{key}`. PUT requires the body `key` to match the path key.
+The HTTP layer is a sketch backed by a process-local dict — no persistence, no auth, no targeting rules yet.
+
+Routes:
+- `GET /healthz`
+- `GET /flags`, `GET/PUT/DELETE /flags/{key}` (PUT body `key` must match path key)
+- `POST /evaluate/{key}` — accepts optional `EvaluationContext` body (extra fields allowed), returns `{key, value, reason}`. Reason is `FLAG_ENABLED` / `FLAG_DISABLED`. Unknown flag → 404 (not graceful-default). The context body is currently ignored — accepted only to shape the wire format for when targeting rules land.
