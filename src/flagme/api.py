@@ -1,10 +1,24 @@
-from typing import Literal
+from datetime import datetime, timezone
+from typing import Annotated
+from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from flagme import __version__
+from flagme.models import (
+    Evaluation,
+    EvaluationContext,
+    Flag,
+    FlagInput,
+)
+from flagme.storage import (
+    FlagNotFound,
+    FlagStorage,
+    default_db_path,
+    evaluate_value,
+)
 
 _OPENAPI_TAGS = [
     {"name": "System", "description": "Liveness and service metadata."},
@@ -22,31 +36,30 @@ app = FastAPI(
     openapi_tags=_OPENAPI_TAGS,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+_storage: FlagStorage | None = None
+
+
+def get_storage() -> FlagStorage:
+    global _storage
+    if _storage is None:
+        _storage = FlagStorage(default_db_path())
+    return _storage
+
+
+StorageDep = Annotated[FlagStorage, Depends(get_storage)]
+
 
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/docs")
-
-
-class Flag(BaseModel):
-    key: str = Field(min_length=1)
-    enabled: bool = False
-    description: str = ""
-
-
-class EvaluationContext(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    subject: str | None = None
-
-
-class Evaluation(BaseModel):
-    key: str
-    value: bool
-    reason: Literal["FLAG_ENABLED", "FLAG_DISABLED"]
-
-
-_store: dict[str, Flag] = {}
 
 
 @app.get("/healthz", tags=["System"], summary="Liveness probe")
@@ -54,48 +67,82 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/flags", tags=["Flags"], summary="List all flags")
-def list_flags() -> list[Flag]:
-    return list(_store.values())
+@app.get("/flags", tags=["Flags"], summary="List flags")
+def list_flags(
+    storage: StorageDep,
+    environment: str | None = None,
+    user_id: str | None = None,
+) -> list[Flag]:
+    return storage.list_flags(environment=environment, user_id=user_id)
 
 
-@app.get("/flags/{key}", tags=["Flags"], summary="Get a flag by key")
-def get_flag(key: str) -> Flag:
-    flag = _store.get(key)
-    if flag is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown flag: {key}")
-    return flag
-
-
-@app.put("/flags/{key}", tags=["Flags"], summary="Create or replace a flag")
-def upsert_flag(key: str, flag: Flag) -> Flag:
-    if flag.key != key:
+@app.get("/flags/{flag_id}", tags=["Flags"], summary="Get a flag by id")
+def get_flag(flag_id: UUID, storage: StorageDep) -> Flag:
+    try:
+        return storage.get(flag_id)
+    except FlagNotFound:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "key in path and body must match"
-        )
-    _store[key] = flag
-    return flag
+            status.HTTP_404_NOT_FOUND, f"unknown flag id: {flag_id}"
+        ) from None
+
+
+@app.post(
+    "/flags",
+    tags=["Flags"],
+    summary="Create a flag",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_flag(payload: FlagInput, storage: StorageDep) -> Flag:
+    flag = Flag.model_validate(payload.model_dump())
+    return storage.create(flag)
+
+
+@app.put("/flags/{flag_id}", tags=["Flags"], summary="Replace a flag")
+def update_flag(flag_id: UUID, payload: FlagInput, storage: StorageDep) -> Flag:
+    flag = Flag.model_validate({**payload.model_dump(), "id": flag_id})
+    try:
+        return storage.update(flag)
+    except FlagNotFound:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"unknown flag id: {flag_id}"
+        ) from None
 
 
 @app.delete(
-    "/flags/{key}",
+    "/flags/{flag_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["Flags"],
     summary="Delete a flag",
 )
-def delete_flag(key: str) -> None:
-    if _store.pop(key, None) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown flag: {key}")
+def delete_flag(flag_id: UUID, storage: StorageDep) -> None:
+    try:
+        storage.delete(flag_id)
+    except FlagNotFound:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"unknown flag id: {flag_id}"
+        ) from None
 
 
 @app.post("/evaluate/{key}", tags=["Evaluation"], summary="Evaluate a flag")
-def evaluate(key: str, context: EvaluationContext | None = None) -> Evaluation:
-    del context  # unused until rules/targeting land; accepted to shape the API
-    flag = _store.get(key)
+def evaluate(
+    key: str,
+    storage: StorageDep,
+    context: EvaluationContext | None = None,
+) -> Evaluation:
+    ctx = context or EvaluationContext()
+    flag = storage.find_match(
+        key,
+        environment=ctx.environment,
+        user_id=ctx.user_id,
+        now=datetime.now(timezone.utc),
+    )
     if flag is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown flag: {key}")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no matching flag for key: {key}"
+        )
     return Evaluation(
         key=key,
-        value=flag.enabled,
-        reason="FLAG_ENABLED" if flag.enabled else "FLAG_DISABLED",
+        value_type=flag.value_type,
+        value=evaluate_value(flag),
+        matched_flag_id=flag.id,
     )
