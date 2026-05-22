@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`flagme` is a feature flag service. Python 3.12, src-layout, hatchling build backend.
+`flagme` is a feature flag service. Python 3.12, src-layout, hatchling build backend. HTTP layer is FastAPI; the runtime entry point launches uvicorn.
 
 ## Commands
 
@@ -28,18 +28,21 @@ Lint / format / typecheck:
 .venv/bin/mypy src
 ```
 
-Run the package entry point:
+Run the service:
 ```
-.venv/bin/flagme         # installed console script
-.venv/bin/python -m flagme
+.venv/bin/flagme                              # installed console script -> uvicorn on 127.0.0.1:8000
+.venv/bin/python -m flagme                    # same
+.venv/bin/uvicorn flagme.api:app --reload     # dev mode with auto-reload
 ```
 
 ## Layout
 
-- `src/flagme/` — package source (src-layout; the package is only importable after `pip install -e .`)
-- `tests/` — pytest tests, configured via `[tool.pytest.ini_options]` in `pyproject.toml`
-- `.idea/` — stale IntelliJ config with Go support enabled; ignore, the project is Python
+- `src/flagme/api.py` — FastAPI app, Pydantic `Flag` model, and the in-memory `_store` dict that backs CRUD routes. Everything lives in one module on purpose; split when complexity earns it.
+- `src/flagme/__main__.py` — `main()` calls `uvicorn.run("flagme.api:app", ...)`; this is what the `flagme` console script invokes.
+- `tests/conftest.py` — autouse fixture that clears `_store` between tests so the in-memory state doesn't leak.
+- `tests/` — pytest tests, configured via `[tool.pytest.ini_options]` in `pyproject.toml`.
+- `.idea/` — stale IntelliJ config with Go support enabled; ignore, the project is Python.
 
 ## Status
 
-Scaffolding only — `__main__.main` is a placeholder and there is no service code, HTTP layer, or storage yet. When real subsystems land (API server, flag evaluation engine, persistence), document the high-level architecture here.
+The HTTP layer is a sketch backed by a process-local dict — no persistence, no auth, no flag-evaluation engine yet. Routes: `GET /healthz`, `GET /flags`, `GET/PUT/DELETE /flags/{key}`. PUT requires the body `key` to match the path key.
